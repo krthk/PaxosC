@@ -188,7 +188,7 @@ class Node(threading.Thread):
                 self.initPaxos(value = self.lockValue)
                 
                 # Add the result to the log
-                value_type, value_amount, value_hash = msg.metadata['value'][0], msg.metadata['value'][1], msg.metadata['value'][2]
+                value_type, value_amount, value_hash = msg.metadata['value']
                 self.log.addTransaction(r, value_type, value_amount, value_hash)
           
                 return
@@ -282,7 +282,6 @@ class Node(threading.Thread):
                                      state.highestBallot, 
                                      {'value': state.value})
                 
-                print self.serverSet
                 for server in self.serverSet:
                     self.sendMessage(decide_msg, server)
 
@@ -297,12 +296,15 @@ class Node(threading.Thread):
                 self.removeRound(r)
 
                 # Add the result to the log
-                value_type, value_amount, value_hash = msg.metadata['value'][0], msg.metadata['value'][1], msg.metadata['value'][2]
+                if isinstance(msg.metadata['value'], list):
+                    value_type, value_amount, value_hash = self.getDecideValue(msg.metadata['value'])
+                else:
+                    value_type, value_amount, value_hash = msg.metadata['value']
                 self.log.addTransaction(r, value_type, value_amount, value_hash)
           
                 # If the value we just decided on is the value our user is waiting on, then we are done
                 # Else, we need to start another round to get consensus on our original value
-                if (value_type, value_amount, value_hash) == self.lockValue:
+                if (value_type, value_amount, value_hash) == self.lockValue or self.lockValue in msg.metadata['value']:
                     self.proposalCompleted.set()
                 else:
                     self.initPaxos(value = self.lockValue)
@@ -318,21 +320,24 @@ class Node(threading.Thread):
                 newState = PaxosState(r, state.role, 
                                       PaxosState.ACCEPTOR_DECIDED if state.role == PaxosRole.ACCEPTOR else PaxosState.LEARNER_DECIDED,
                                       state.highestBallot,
-                                      msg.metadata['value'])
+                                      self.getDecideValue(msg.metadata['value']))
                 self.paxosStates[r] = newState
             else:
                 # Update the state corresponding to receiving the DECIDE
                 newState = PaxosState(r, PaxosRole.LEARNER, 
                                       PaxosState.LEARNER_DECIDED,
                                       msg.ballot,
-                                      msg.metadata['value'])
+                                      self.getDecideValue(msg.metadata['value']))
                 self.paxosStates[r] = newState
             
             # Update the state to reflect that this round has been DECIDED
             self.removeRound(r)
                 
             # Add the result to the log
-            value_type, value_amount, value_hash = msg.metadata['value'][0], msg.metadata['value'][1], msg.metadata['value'][2]
+            if isinstance(msg.metadata['value'], list):
+                value_type, value_amount, value_hash = self.getDecideValue(msg.metadata['value'])
+            else:
+                value_type, value_amount, value_hash = msg.metadata['value']
             self.log.addTransaction(r, value_type, value_amount, value_hash)
 
             # If some other proposer decided on our value, then release the application lock
@@ -341,11 +346,11 @@ class Node(threading.Thread):
             if not self.lockValue: 
                 return
             
-            if (value_type, value_amount, value_hash) == self.lockValue:
+            if (value_type, value_amount, value_hash) == self.lockValue or self.lockValue in msg.metadata['value']:
                 self.proposalCompleted.set()
             else:
                 for key in self.paxosStates:
-                    if self.paxosStates[key].value == self.lockValue:
+                    if self.paxosStates[key].value == self.lockValue or self.lockValue in self.paxosStates[key].value:
                         return
                 self.initPaxos(value = self.lockValue)
 
@@ -394,7 +399,7 @@ class Node(threading.Thread):
 
         prop_msg = Message(r, Message.PROPOSER_PREPARE, self.addr, ballot)
         
-        print '{0}: Initiating Paxos for r {1}'.format(self.addr, r)
+        print '{0}: Initiating Paxos for round {1}'.format(self.addr, r)
         self.paxosStates[r] = PaxosState(r, PaxosRole.PROPOSER, 
                                          PaxosState.PROPOSER_SENT_PROPOSAL,  
                                          ballot,
@@ -472,13 +477,11 @@ class Node(threading.Thread):
                 assert listOfValues
                 maxVotes = listOfValues.count(highestValue)
                 
-                for val in Set(listOfValues):
-                    if val[0] == self.lockValue[0]:
-#                         self.lockValue = (self.lockValue[0], self.lockValue[1] + val[1], self.lockValue[2] + val[2])
-                        highestValue = highestValue + val
-                        print 'highestValue: ', highestValue
-            
-            print '{0}: highestBallot, highestValue, listOfValues, maxVotes - {1} {2} {3} {4}'.format(self.addr, highestBallot, highestValue, listOfValues, maxVotes)
+                if maxVotes + (self.numServers+1 - nResponseSet) < self.quorumSize:
+                    newValue = [val for val in Set(listOfValues) if val[0] == self.lockValue[0]]
+                    if newValue:
+                        newValue.append(self.lockValue)
+                        highestValue = newValue
             
             print '{0}: PROMISE Quorum formed'.format(self.addr)
             print '{0}: Sending ACCEPT messages to all ACCEPTORS'.format(self.addr)
@@ -494,10 +497,8 @@ class Node(threading.Thread):
                                  state.highestBallot, 
                                  {'value': highestValue})
             
-#                 print '{0}: {1}'.format(self.addr, accept_msg)
             for (source, _, _) in self.paxosStates[r].responses:
                 self.sendMessage(accept_msg, source)
-#                     time.sleep(1)
 
             # Update the state corresponding to sending the accepts
             newState = PaxosState(r, PaxosRole.PROPOSER, 
@@ -506,6 +507,13 @@ class Node(threading.Thread):
                                   highestValue)
             self.paxosStates[r] = newState
 
+    def getDecideValue(self, listVals):
+        if not isinstance(listVals, list): 
+            return listVals
+        
+        z = zip(*listVals)
+        assert len(Set(z[0])) == 1
+        return (z[0][0], sum(z[1]), hash(z[2]))
         
     #After receiving a NACK, retry with the lowest available round and the failed value
     def retryPaxos(self, round, failedValue, highestBallot):
@@ -594,51 +602,27 @@ class Node(threading.Thread):
             print '{0}: Resuming activity'.format(self.addr)
 
 if __name__ == '__main__':
-    n1 = Node('127.0.0.1', 55555, 'config2')
-    n1.start()
-
-    n2 = Node('127.0.0.1', 55556, 'config2')
-    n2.start()
-    
-    n3 = Node('127.0.0.1', 55557, 'config2')
-    n3.start()
-
-    n4 = Node('127.0.0.1', 55558, 'config2')
-    n4.start()
-
-    time.sleep(2)
-#     b = Ballot('127.0.0.1', 55556)
-#     msg = Message(0, Message.PROPOSER_PREPARE, n2.addr, b)
-#     n2.sendMessage(msg, ('127.0.0.1', 55555))
-    n3.initPaxos(0, value = 10)
-    time.sleep(5)
-    print n1.paxosStates[0]
-    print n2.paxosStates[0]
-    print n3.paxosStates[0]
-    print n4.paxosStates[0]
-    
-    n1.removeRound(4)
-    print n1.setOfGaps
-    print n1.getNextRound()
-#     time.sleep(2)
-#     n.initPaxos(0, value = 20)
-#     time.sleep(2)
-#     print n.paxosStates[0]
-
-#     for _ in xrange(5):
-#         print n.getQuorum()
-#         
-#     print 
+    n1 = Node('127.0.0.1', 55555, '127.0.0.1', 55555, '../config2')
+    print n1.getDecideValue([(1,2,23), (1,3,45)])
+#     n1.start()
+# 
+#     n2 = Node('127.0.0.1', 55556, 'config2')
+#     n2.start()
 #     
-#     for _ in xrange(5):
-#         print n2.getQuorum()
-
-#     time.sleep(3)
-#     b.increment()
-#     msg = Message(0, Message.ACCEPTOR_ACCEPT, n2.addr, b)
-#     n2.sendMessage(msg, ('127.0.0.1', 55555))
-    
-#     prep_msg = Message(0, Message.PROPOSER_PREPARE, n2.addr, b, None)
-#     n2.sendMessage(prep_msg, ('127.0.0.1', 55555))
-
-
+#     n3 = Node('127.0.0.1', 55557, 'config2')
+#     n3.start()
+# 
+#     n4 = Node('127.0.0.1', 55558, 'config2')
+#     n4.start()
+# 
+#     time.sleep(2)
+#     n3.initPaxos(0, value = 10)
+#     time.sleep(5)
+#     print n1.paxosStates[0]
+#     print n2.paxosStates[0]
+#     print n3.paxosStates[0]
+#     print n4.paxosStates[0]
+#     
+#     n1.removeRound(4)
+#     print n1.setOfGaps
+#     print n1.getNextRound()

@@ -41,7 +41,7 @@ node.start()
 time.sleep(1)
 
 # Sync when you start
-node.logSync(node.log.transactions)
+# node.logSync(node.log.transactions)
 
 # Main loop of application
 while True:

@@ -352,7 +352,8 @@ class Node(threading.Thread):
                 for key in self.paxosStates:
                     if self.paxosStates[key].value == self.lockValue or self.lockValue in self.paxosStates[key].value:
                         return
-                self.initPaxos(value = self.lockValue)
+                if not self.proposalCompleted.isSet():
+                    self.initPaxos(value = self.lockValue)
 
         elif msg.messageType == Message.LOG_SYNC_REQUEST:
             print '{0}: Received a SYNC REQUEST message from {1}'.format(self.addr, msg.source)

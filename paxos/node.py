@@ -477,7 +477,7 @@ class Node(threading.Thread):
                 assert listOfValues
                 maxVotes = listOfValues.count(highestValue)
                 
-                if maxVotes + (self.numServers+1 - nResponseSet) < self.quorumSize:
+                if maxVotes + (self.numServers - nResponseSet) < self.quorumSize:
                     newValue = [val for val in Set(listOfValues) if val[0] == self.lockValue[0]]
                     if newValue:
                         newValue.append(self.lockValue)
